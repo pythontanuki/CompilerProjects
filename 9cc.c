@@ -28,14 +28,13 @@ char *user_input;
 
 // エラーを報告するための関数
 // printfと同じ引数を取る
-/*(void error(char *fmt, ...) {
+void error(char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
   vfprintf(stderr, fmt, ap);
   fprintf(stderr, "\n");
   exit(1);
 }
-*/
 
 /*可変長引数にダイナミズムを持たせるにはva_listとして、新しい１つの変数にすることが大事*/
 
@@ -111,7 +110,7 @@ Token *tokenize() {
       continue;
     }
 
-    if (*p == '+' || *p == '-') {
+    if (strchr("+-*/()", *p)) {
       cur = new_token(TK_RESERVED, cur, p++);
       continue;
     }
@@ -132,37 +131,134 @@ Token *tokenize() {
   return head.next;
 }
 
+/*Write Code of Recursive Parser Code.*/
+/*
+expr = mul("+" mul | "-" mul")*
+  mul = primary("*" primary | "/" primary)*
+  primary = num | "("expr")"
+*/
+
+/*Struct of AST*/
+typedef enum {
+    ND_ADD,
+    ND_SUB,
+    ND_MUL,
+    ND_DIV,
+    ND_NUM,
+} NodeKind;
+
+typedef struct Node Node;
+Node *expr();
+Node *primary();
+Node *mul();
+
+struct Node {
+    NodeKind kind;//type of node
+    Node *lhs;//left_child
+    Node *rhs;//right_child
+    int val;//value of node, if kind is ND_NUM.
+};
+
+/*Write Function to make new Node.*/
+
+/*newNode makes the new Node whose type is excepted for ND_NUM.*/
+Node *newNode(NodeKind kind, Node *lhs, Node *rhs) {
+    Node *node = calloc(1,sizeof(Node));
+    node->kind = kind;
+    node->lhs = lhs;
+    node->rhs = rhs;
+    return node;
+}
+
+/*newNode_num makes the new Node whose type is ND_NUM, only.*/
+Node *newNode_num(int val) {
+    Node *node_num = calloc(1,sizeof(Node));
+    node_num->kind = ND_NUM;
+    node_num->val = val;
+    return node_num;
+}
+
+/*These are LL(1) Parsa methods.*/
+Node *expr() {
+    Node *node = mul();
+    for(;;) {
+        if(consume('+')) node = newNode(ND_ADD, node, mul());
+        else if(consume('-')) node = newNode(ND_SUB, node, mul());
+        else return node;
+    }
+}
+
+
+Node* mul() {
+    Node *node = primary();
+    for(;;) {
+        if(consume('*')) node = newNode(ND_MUL, node, primary());
+        else if(consume('/')) node = newNode(ND_DIV, node, primary());
+        else return node;
+    }
+}
+
+Node* primary() {
+    if(consume('(')) {
+        Node *node = expr();
+        expect(')');
+        return node;
+    } 
+    return newNode_num(expect_number());
+}
+
+void gen(Node *node) {
+  if (node->kind == ND_NUM) {
+    printf("  push %d\n", node->val);
+    return;
+  }
+
+  gen(node->lhs);
+  gen(node->rhs);
+
+  printf("  pop rdi\n");
+  printf("  pop rax\n");
+
+  switch (node->kind) {
+  case ND_ADD:
+    printf("  add rax, rdi\n");
+    break;
+  case ND_SUB:
+    printf("  sub rax, rdi\n");
+    break;
+  case ND_MUL:
+    printf("  imul rax, rdi\n");
+    break;
+  case ND_DIV:
+    printf("  cqo\n");
+    printf("  idiv rdi\n");
+    break;
+  }
+
+  printf("  push rax\n");
+}
+
 int main(int argc, char **argv) {
   if (argc != 2) {
-    //error("引数の個数が正しくありません");
-    error_at(token->str, "引数の個数が正しくありません\n");
+    error("引数の個数が正しくありません");
     return 1;
   }
   // トークナイズする
-//   printf("%s\n", argv[1]);
   user_input = argv[1];
   token = tokenize();
+  Node *node = expr();
+
   // アセンブリの前半部分を出力
   printf(".intel_syntax noprefix\n");
   printf(".globl main\n");
   printf("main:\n");
-//   printf("%d\n", token->val);
-  // 式の最初は数でなければならないので、それをチェックして
-  // 最初のmov命令を出力
-  printf("  mov rax, %d\n", expect_number());
 
-  // `+ <数>`あるいは`- <数>`というトークンの並びを消費しつつ
-  // アセンブリを出力
-  while (!at_eof()) {
-    if (consume('+')) {
-      printf("  add rax, %d\n", expect_number());
-      continue;
-    }
+  // 抽象構文木を下りながらコード生成
+  gen(node);
 
-    expect('-');
-    printf("  sub rax, %d\n", expect_number());
-  }
-
+  // スタックトップに式全体の値が残っているはずなので
+  // それをRAXにロードして関数からの返り値とする
+  printf("  pop rax\n");
   printf("  ret\n");
   return 0;
 }
